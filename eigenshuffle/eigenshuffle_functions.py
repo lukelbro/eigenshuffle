@@ -1,8 +1,9 @@
 from typing import Literal, Sequence, TypeVar, overload
 
-import munkres
 import numpy as np
 import numpy.typing as npt
+from scipy.optimize import linear_sum_assignment
+
 
 __all__ = ["eigenshuffle_eig", "eigenshuffle_eigh"]
 
@@ -41,50 +42,43 @@ def _shuffle(
     use_eigenvalues: bool = True,
 ) -> tuple[eigenvals_complex_or_float, eigenvecs_complex_or_float]:
     """
-    Consistently reorder eigenvalues/vectors based on the initial ordering. Uses the
-    Hungarian Algorithm to solve the assignment problem of with eigenvalue/vector pair
-    most closely matches another. The distance function uses here is:
-        (1 - np.abs(V1.T @ V2))*np.sqrt(
-            distance_matrix(D1.real, D2.real) ** 2
-            + distance_matrix(D1.imag, D2.imag) ** 2
-        )
-    where distance_matrix computes the interpoint distance matrix and D,V are the
-    eigenvalues/vectors, respectively.
+    Consistently reorder eigenvalues/vectors based on the initial ordering.
+    Uses SciPy's linear_sum_assignment to solve the assignment problem that finds
+    the best mapping between two successive systems, and then adjusts sign consistency.
 
     Args:
-        eigenvalues (eigenvals_complex_or_float): mxn eigenvalues
-        eigenvectors (eigenvecs_complex_or_float): mxnxn eigenvectors
-        use_eigenvalues (bool, optional): bool specifying use of eigenvalues in distance calculation. Defaults to True.
+        eigenvalues (eigenvals_complex_or_float): mxn eigenvalues.
+        eigenvectors (eigenvecs_complex_or_float): mxnxn eigenvectors.
+        use_eigenvalues (bool, optional): whether to use eigenvalues in the distance calculation.
 
     Returns:
-        tuple[eigenvals_complex_or_float, eigenvecs_complex_or_float]: consistently ordered eigenvalues/vectors.
+        tuple[eigenvals_complex_or_float, eigenvecs_complex_or_float]: consistently ordered eigenvalues and eigenvectors.
     """
-    m = munkres.Munkres()
     for i in range(1, len(eigenvalues)):
-        # compute distance between systems
+        # Compute distance between systems
         D1, D2 = eigenvalues[i - 1 : i + 1]
         V1, V2 = eigenvectors[i - 1 : i + 1]
 
         distance = 1 - np.abs(V1.T @ V2)
         if use_eigenvalues:
             dist_vals = np.sqrt(
-                distance_matrix(D1.real, D2.real) ** 2
-                + distance_matrix(D1.imag, D2.imag) ** 2
+                distance_matrix(D1.real, D2.real) ** 2 +
+                distance_matrix(D1.imag, D2.imag) ** 2
             )
             distance *= dist_vals
 
-        # Is there a best permutation? use munkres.
-        reorder = m.compute(distance)
-        reorder = [coord[1] for coord in reorder]
+        # Use SciPy's linear_sum_assignment to get optimal assignment.
+        _, col_ind = linear_sum_assignment(distance)
+        reorder = col_ind  # permutation of indices
 
         eigenvectors[i] = eigenvectors[i][:, reorder]
         eigenvalues[i] = eigenvalues[i, reorder]
 
-        # also ensure the signs of each eigenvector pair
-        # were consistent if possible
-        S = np.squeeze(np.sum(eigenvectors[i - 1] * eigenvectors[i], 0).real) < 0
-
-        eigenvectors[i] = eigenvectors[i] * (-S.astype(int) * 2 - 1)
+        # Adjust the sign consistency as in the original implementation.
+        dot = np.sum(eigenvectors[i - 1] * eigenvectors[i], axis=0).real
+        # Replicate original factor: if dot < 0, multiply by -3; else by -1.
+        flip_factors = -(((dot < 0).astype(int) * 2) + 1)
+        eigenvectors[i] = eigenvectors[i] * flip_factors
 
     return eigenvalues, eigenvectors
 
