@@ -214,7 +214,7 @@ def _eigenshuffle(
             if hermitian:
                 vals_gpu, vecs_gpu = cp.linalg.eigh(mat_gpu)
             else:
-                vals_gpu, vecs_gpu = cp.linalg.eig(mat_gpu)
+                vals_gpu, vecs_gpu = cp.linalg.eigh(mat_gpu)
             vals = cp.asnumpy(vals_gpu)
             vecs = cp.asnumpy(vecs_gpu)
         else:
@@ -242,6 +242,7 @@ def eigenshuffle_eigh(
     progress: bool = True,
     dtype: np.dtype | None = None,
     use_gpu: bool = False,
+    count: int | None = None,
 ) -> tuple[
     npt.NDArray[np.floating],
     npt.NDArray[np.floating] | npt.NDArray[np.complexfloating],
@@ -265,6 +266,7 @@ def eigenshuffle_eigh(
         use_eigenvalues=use_eigenvalues,
         progress=progress,
         dtype=dtype,
+        count=count,
         use_gpu=use_gpu,
     )
 
@@ -278,6 +280,7 @@ def eigenshuffle_eig(
     progress: bool = True,
     dtype: np.dtype | None = None,
     use_gpu: bool = False,
+    count: int | None = None,
 ) -> tuple[
     npt.NDArray[np.floating] | npt.NDArray[np.complexfloating],
     npt.NDArray[np.floating] | npt.NDArray[np.complexfloating],
@@ -301,5 +304,6 @@ def eigenshuffle_eig(
         use_eigenvalues=use_eigenvalues,
         progress=progress,
         dtype=dtype,
+        count=count,
         use_gpu=use_gpu,
     )
