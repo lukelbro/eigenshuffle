@@ -150,6 +150,8 @@ def _eigenshuffle(
     use_eigenvalues,
     progress: bool = True,
     dtype: np.dtype | None = None,
+    count: int | None = None,
+    use_gpu: bool = False,
 ):
     """
     Consistently reorder eigenvalues and eigenvectors based on the initial ordering,
@@ -165,35 +167,68 @@ def _eigenshuffle(
     Returns:
         tuple[NDArray, NDArray]: consistently ordered eigenvalues/vectors
     """
-    assert len(np.shape(matrices)) > 2, "matrices must be of shape mxnxn"
+    # allow lazy generator or sequence; require count if matrices is callable
+    is_callable = callable(matrices)
+    if is_callable and count is None:
+        raise ValueError("`count` must be provided when passing a matrix factory")
+    # determine iteration indices and matrix getter
+    if is_callable:
+        m = count
+        def get_mat(i): return matrices(i)
+    else:
+        arr = np.asarray(matrices)
+        assert arr.ndim == 3, "matrices must be shape m×n×n"
+        m = arr.shape[0]
+        def get_mat(i): return arr[i]
 
-    # Diagonalize each matrix with optional progress reporting.
-    diag_desc = "Time to complete diagonalization"
-    iterator = tqdm(matrices, desc=diag_desc, unit="matrix") if progress else matrices
-    # preallocate output arrays to avoid holding all diag_results simultaneously
-    # determine number of problems and matrix size
-    m = len(matrices)
-    n = matrices.shape[-1]
-    # use complex dtype to accommodate both real and complex cases
-    eigenvalues = np.empty((m, n))
-    eigenvectors = np.empty((m, n, n))
-    # fill arrays one matrix at a time
-    for i, mat in enumerate(iterator):
+    # diagonalize with optional progress over indices
+    idxs = range(m)
+    iterator = tqdm(idxs, desc="Time to complete diagonalization", unit="matrix") if progress else idxs
+    # build first matrix to infer size and dtype
+    sample = get_mat(0)
+    n = sample.shape[-1]
+    in_dtype = sample.dtype
+
+    # choose output dtype (real or complex) defaulting to match input
+    if dtype is None:
         if hermitian:
-            vals, vecs = np.linalg.eigh(mat)
+            out_dtype = in_dtype
         else:
-            vals, vecs = np.linalg.eig(mat)
+            out_dtype = np.promote_types(in_dtype, np.complex64)
+    else:
+        out_dtype = dtype
+    # preallocate outputs
+    eigenvalues = np.empty((m, n), dtype=out_dtype)
+    eigenvectors = np.empty((m, n, n), dtype=out_dtype)
+    # compute each matrix on demand (GPU if requested)
+    if use_gpu:
+        try:
+            import importlib
+            cp = importlib.import_module("cupy")
+        except ImportError:
+            raise ImportError("CuPy is required for GPU diagonalization. Install cupy-cudaXX.")
+    for i in iterator:
+        mat = get_mat(i)
+        if use_gpu:
+            mat_gpu = cp.asarray(mat)
+            if hermitian:
+                vals_gpu, vecs_gpu = cp.linalg.eigh(mat_gpu)
+            else:
+                vals_gpu, vecs_gpu = cp.linalg.eig(mat_gpu)
+            vals = cp.asnumpy(vals_gpu)
+            vecs = cp.asnumpy(vecs_gpu)
+        else:
+            if hermitian:
+                vals, vecs = np.linalg.eigh(mat)
+            else:
+                vals, vecs = np.linalg.eig(mat)
         eigenvalues[i] = vals
         eigenvectors[i] = vecs
 
-    eigenvalues, eigenvectors = _reorder(
-        eigenvalues=eigenvalues, eigenvectors=eigenvectors
-    )
+    # reorder and shuffle full sequence
+    eigenvalues, eigenvectors = _reorder(eigenvalues, eigenvectors)
     eigenvalues, eigenvectors = _shuffle(
-        eigenvalues=eigenvalues,
-        eigenvectors=eigenvectors,
-        use_eigenvalues=use_eigenvalues,
-        progress=progress,
+        eigenvalues, eigenvectors, use_eigenvalues, progress
     )
     return eigenvalues, eigenvectors
 
@@ -206,6 +241,7 @@ def eigenshuffle_eigh(
     use_eigenvalues: bool = True,
     progress: bool = True,
     dtype: np.dtype | None = None,
+    use_gpu: bool = False,
 ) -> tuple[
     npt.NDArray[np.floating],
     npt.NDArray[np.floating] | npt.NDArray[np.complexfloating],
@@ -229,6 +265,7 @@ def eigenshuffle_eigh(
         use_eigenvalues=use_eigenvalues,
         progress=progress,
         dtype=dtype,
+        use_gpu=use_gpu,
     )
 
 
@@ -240,6 +277,7 @@ def eigenshuffle_eig(
     use_eigenvalues: bool = False,
     progress: bool = True,
     dtype: np.dtype | None = None,
+    use_gpu: bool = False,
 ) -> tuple[
     npt.NDArray[np.floating] | npt.NDArray[np.complexfloating],
     npt.NDArray[np.floating] | npt.NDArray[np.complexfloating],
@@ -263,4 +301,5 @@ def eigenshuffle_eig(
         use_eigenvalues=use_eigenvalues,
         progress=progress,
         dtype=dtype,
+        use_gpu=use_gpu,
     )
