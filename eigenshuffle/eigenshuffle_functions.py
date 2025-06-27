@@ -209,12 +209,13 @@ def _eigenshuffle(
             raise ImportError("CuPy is required for GPU diagonalization. Install cupy-cudaXX.")
     for i in iterator:
         mat = get_mat(i)
+        # ensure GPU matrix uses desired output dtype
         if use_gpu:
-            mat_gpu = cp.asarray(mat)
+            mat_gpu = cp.asarray(mat, dtype=out_dtype)
             if hermitian:
                 vals_gpu, vecs_gpu = cp.linalg.eigh(mat_gpu)
             else:
-                vals_gpu, vecs_gpu = cp.linalg.eigh(mat_gpu)
+                vals_gpu, vecs_gpu = cp.linalg.eig(mat_gpu)
             vals = cp.asnumpy(vals_gpu)
             vecs = cp.asnumpy(vecs_gpu)
         else:
