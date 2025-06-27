@@ -71,3 +71,22 @@ ax.grid()
 ```
 ![consistenly sorted eigenvalues](https://raw.githubusercontent.com/ograsdijk/eigenshuffle/main/images/sorted_vs_unsorted.png)  
 Here the eigenvalues are consistently ordered, and are not switching positions after a level crossing (around t=0.3) when using `eigenshuffle`.
+
+## Lazy matrix generation
+
+Both `eigenshuffle_eig` and `eigenshuffle_eigh` now accept a callable factory instead of a full 3D array, together with a `count` of matrices. This allows you to generate each Hamiltonian (or any matrix) on demand and keep peak memory at O(n²).
+
+Example:
+```python
+# define your matrix builder taking an index -> 2D matrix
+def mat_factory(i):
+    v = vacs[i]
+    return hamiltonian(v).astype(np.float32)
+
+# call with factory and total count
+es, vs = eigenshuffle_eig(
+    mat_factory,
+    count=len(vacs),       # number of matrices
+    dtype=np.float32       # output data type
+)
+```
