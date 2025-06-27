@@ -148,6 +148,8 @@ def _eigenshuffle(
     matrices,
     hermitian,
     use_eigenvalues,
+    progress: bool = True,
+    dtype: np.dtype | None = None,
 ):
     """
     Consistently reorder eigenvalues and eigenvectors based on the initial ordering,
@@ -158,21 +160,31 @@ def _eigenshuffle(
         matrices (Sequence[NDArray] or NDArray): eigenvalue/vector problems (shape m×n×n)
         hermitian (bool): bool specifying hermitian
         use_eigenvalues (bool): bool specifying use of eigenvalues for re-ordering in _shuffle
+        progress (bool, optional): show progress bar if True.
 
     Returns:
         tuple[NDArray, NDArray]: consistently ordered eigenvalues/vectors
     """
     assert len(np.shape(matrices)) > 2, "matrices must be of shape mxnxn"
 
-    # Diagonalize each matrix with progress reporting.
+    # Diagonalize each matrix with optional progress reporting.
     diag_desc = "Time to complete diagonalization"
-    if hermitian:
-        diag_results = [np.linalg.eigh(mat) for mat in tqdm(matrices, desc=diag_desc, unit="matrix")]
-    else:
-        diag_results = [np.linalg.eig(mat) for mat in tqdm(matrices, desc=diag_desc, unit="matrix")]
-
-    eigenvalues = np.array([vals for vals, _ in diag_results])
-    eigenvectors = np.array([vecs for _, vecs in diag_results])
+    iterator = tqdm(matrices, desc=diag_desc, unit="matrix") if progress else matrices
+    # preallocate output arrays to avoid holding all diag_results simultaneously
+    # determine number of problems and matrix size
+    m = len(matrices)
+    n = matrices.shape[-1]
+    # use complex dtype to accommodate both real and complex cases
+    eigenvalues = np.empty((m, n))
+    eigenvectors = np.empty((m, n, n))
+    # fill arrays one matrix at a time
+    for i, mat in enumerate(iterator):
+        if hermitian:
+            vals, vecs = np.linalg.eigh(mat)
+        else:
+            vals, vecs = np.linalg.eig(mat)
+        eigenvalues[i] = vals
+        eigenvectors[i] = vecs
 
     eigenvalues, eigenvectors = _reorder(
         eigenvalues=eigenvalues, eigenvectors=eigenvectors
@@ -181,7 +193,7 @@ def _eigenshuffle(
         eigenvalues=eigenvalues,
         eigenvectors=eigenvectors,
         use_eigenvalues=use_eigenvalues,
-        progress=True,
+        progress=progress,
     )
     return eigenvalues, eigenvectors
 
@@ -192,6 +204,8 @@ def eigenshuffle_eigh(
     | Sequence[npt.NDArray[np.complexfloating]]
     | npt.NDArray[np.complexfloating],
     use_eigenvalues: bool = True,
+    progress: bool = True,
+    dtype: np.dtype | None = None,
 ) -> tuple[
     npt.NDArray[np.floating],
     npt.NDArray[np.floating] | npt.NDArray[np.complexfloating],
@@ -204,11 +218,18 @@ def eigenshuffle_eigh(
     Args:
         matrices (Sequence[npt.NDArray[np.floating]] | npt.NDArray[np.floating] | Sequence[npt.NDArray[np.complexfloating]] | npt.NDArray[np.complexfloating]): mxnxn array of eigenvalue problems
         use_eigenvalues (bool, optional): Use the distance between successive eigenvalues as part of the shuffling. Defaults to False.
+        progress (bool, optional): show progress bar if True.
 
     Returns:
         tuple[ npt.NDArray[np.floating], npt.NDArray[np.floating] | npt.NDArray[np.complexfloating], ]: sorted eigenvalues and eigenvectors
     """
-    return _eigenshuffle(matrices, hermitian=True, use_eigenvalues=use_eigenvalues)
+    return _eigenshuffle(
+        matrices,
+        hermitian=True,
+        use_eigenvalues=use_eigenvalues,
+        progress=progress,
+        dtype=dtype,
+    )
 
 
 def eigenshuffle_eig(
@@ -217,6 +238,8 @@ def eigenshuffle_eig(
     | Sequence[npt.NDArray[np.complexfloating]]
     | npt.NDArray[np.complexfloating],
     use_eigenvalues: bool = False,
+    progress: bool = True,
+    dtype: np.dtype | None = None,
 ) -> tuple[
     npt.NDArray[np.floating] | npt.NDArray[np.complexfloating],
     npt.NDArray[np.floating] | npt.NDArray[np.complexfloating],
@@ -229,8 +252,15 @@ def eigenshuffle_eig(
     Args:
         matrices (Sequence[npt.NDArray[np.floating]] | npt.NDArray[np.floating] | Sequence[npt.NDArray[np.complexfloating]] | npt.NDArray[np.complexfloating]): mxnxn array of eigenvalue problems
         use_eigenvalues (bool, optional): Use the distance between successive eigenvalues as part of the shuffling. Defaults to False.
+        progress (bool, optional): show progress bar if True.
 
     Returns:
         tuple[ npt.NDArray[np.floating] | npt.NDArray[np.complexfloating], npt.NDArray[np.floating] | npt.NDArray[np.complexfloating], ]: sorted eigenvalues and eigenvectors
     """
-    return _eigenshuffle(matrices, hermitian=False, use_eigenvalues=use_eigenvalues)
+    return _eigenshuffle(
+        matrices,
+        hermitian=False,
+        use_eigenvalues=use_eigenvalues,
+        progress=progress,
+        dtype=dtype,
+    )
