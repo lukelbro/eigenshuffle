@@ -7,7 +7,7 @@ from tqdm.notebook import tqdm
 
 
 
-__all__ = ["eigenshuffle_eig", "eigenshuffle_eigh"]
+__all__ = ["eigenshuffle_eig", "eigenshuffle_eigh", "eigenshuffle_eigvals"]
 
 eigenvals_complex_or_float = TypeVar(
     "eigenvals_complex_or_float",
@@ -308,3 +308,99 @@ def eigenshuffle_eig(
         count=count,
         use_gpu=use_gpu,
     )
+
+
+def eigenshuffle_eigvals(
+    matrices: Sequence[npt.NDArray[np.floating]]
+    | npt.NDArray[np.floating]
+    | Sequence[npt.NDArray[np.complexfloating]]
+    | npt.NDArray[np.complexfloating],
+    use_eigenvalues: bool = False,
+    progress: bool = True,
+    dtype: np.dtype | None = None,
+    use_gpu: bool = False,
+    count: int | None = None,
+) -> npt.NDArray[np.floating] | npt.NDArray[np.complexfloating]:
+    """
+    Compute eigenvalues only with eig of a series of matrices (mxnxn) and keep eigenvalues consistently sorted; starting with the lowest eigenvalue.
+
+    Args:
+        matrices: mxnxn array of eigenvalue problems
+        use_eigenvalues: Use the distance between successive eigenvalues as part of the shuffling. Defaults to False.
+        progress: show progress bar if True.
+        dtype: Desired dtype for output.
+        use_gpu: Use GPU for diagonalization if True.
+        count: Number of matrices when using a generator.
+
+    Returns:
+        npt.NDArray[np.floating] | npt.NDArray[np.complexfloating]: sorted eigenvalues
+    """
+    # Memory-efficient iterative eigenvalue shuffle: only two eigenvector sets in memory
+    # prepare matrix sequence or factory
+    is_callable = callable(matrices)
+    if is_callable and count is None:
+        raise ValueError("`count` must be provided when passing a matrix factory")
+    if is_callable:
+        m = count
+        get_mat = lambda i: matrices(i)
+    else:
+        arr = np.asarray(matrices)
+        assert arr.ndim == 3, "matrices must be shape m×n×n"
+        m = arr.shape[0]
+        get_mat = lambda i: arr[i]
+
+    # infer dtype, size, GPU setup
+    sample = get_mat(0)
+    n = sample.shape[-1]
+    in_dtype = sample.dtype
+    out_dtype = dtype if dtype is not None else np.promote_types(in_dtype, np.complex64)
+    if use_gpu:
+        import importlib
+        cp = importlib.import_module("cupy")
+
+    # allocate eigenvalues array
+    values = np.empty((m, n), dtype=out_dtype)
+
+    # diagonalize, sort initial frame
+    if use_gpu:
+        mat0_gpu = cp.asarray(sample, dtype=out_dtype)
+        v0_gpu, e0_gpu = cp.linalg.eig(mat0_gpu)
+        vals, vecs = cp.asnumpy(v0_gpu), cp.asnumpy(e0_gpu)
+    else:
+        vals, vecs = np.linalg.eig(sample)
+    idx_sort = np.argsort(vals.real)
+    vals, vecs = vals[idx_sort], vecs[:, idx_sort]
+    values[0] = vals
+    prev_vecs = vecs
+
+    # iterate through remaining matrices
+    idxs = range(1, m)
+    iterator = tqdm(idxs, desc="Time to complete eigval diag+shuffle", unit="matrix") if progress else idxs
+    for i in iterator:
+        mat = get_mat(i)
+        if use_gpu:
+            mg = cp.asarray(mat, dtype=out_dtype)
+            v_gpu, e_gpu = cp.linalg.eig(mg)
+            vals, vecs = cp.asnumpy(v_gpu), cp.asnumpy(e_gpu)
+        else:
+            vals, vecs = np.linalg.eig(mat)
+        # per-frame sort
+        idx_sort = np.argsort(vals.real)
+        vals, vecs = vals[idx_sort], vecs[:, idx_sort]
+        # compute shuffle assignment
+        distance = 1 - np.abs(prev_vecs.T @ vecs)
+        if use_eigenvalues:
+            dist_vals = np.sqrt(
+                distance_matrix(values[i-1].real, vals.real)**2 +
+                distance_matrix(values[i-1].imag, vals.imag)**2
+            )
+            distance *= dist_vals
+        _, col_ind = linear_sum_assignment(distance)
+        vals, vecs = vals[col_ind], vecs[:, col_ind]
+        # enforce sign consistency
+        dot = np.sum(prev_vecs * vecs, axis=0).real
+        flip = -(((dot < 0).astype(int) * 2) + 1)
+        vecs *= flip
+        values[i] = vals
+        prev_vecs = vecs
+    return values
