@@ -364,7 +364,7 @@ def eigenshuffle_eigvals(
     # diagonalize, sort initial frame
     if use_gpu:
         mat0_gpu = cp.asarray(sample, dtype=out_dtype)
-        v0_gpu, e0_gpu = cp.linalg.eig(mat0_gpu)
+        v0_gpu, e0_gpu = cp.linalg.eigh(mat0_gpu)
         vals, vecs = cp.asnumpy(v0_gpu), cp.asnumpy(e0_gpu)
     else:
         vals, vecs = np.linalg.eig(sample)
@@ -380,7 +380,7 @@ def eigenshuffle_eigvals(
         mat = get_mat(i)
         if use_gpu:
             mg = cp.asarray(mat, dtype=out_dtype)
-            v_gpu, e_gpu = cp.linalg.eig(mg)
+            v_gpu, e_gpu = cp.linalg.eigh(mg)
             vals, vecs = cp.asnumpy(v_gpu), cp.asnumpy(e_gpu)
         else:
             vals, vecs = np.linalg.eig(mat)
