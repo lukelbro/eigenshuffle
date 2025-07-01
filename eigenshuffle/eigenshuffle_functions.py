@@ -374,9 +374,13 @@ def eigenshuffle_eigvals(
     prev_vecs = vecs
 
     # Use first set of eigenvectors for state mapping
-    inv_vs = np.linalg.inv(vecs)
-    # Compute squared absolute values and then the argmax along rows for each column.
-    indx_map = np.argmax(np.abs(inv_vs)**2, axis=0)
+    if use_gpu:
+        inv_vs = cp.linalg.inv(cp.asarray(vecs))
+        abs_sq = cp.abs(inv_vs) ** 2
+        indx_map = cp.asnumpy(cp.argmax(abs_sq, axis=0))
+    else:
+        inv_vs = np.linalg.inv(vecs)
+        indx_map = np.argmax(np.abs(inv_vs) ** 2, axis=0)
 
     
     # iterate through remaining matrices
