@@ -364,7 +364,10 @@ def eigenshuffle_eighvals(
 
     # Use first set of eigenvectors for state mapping
     inv_vs = np.linalg.inv(vecs)
-    indx_map = np.argmax(np.abs(inv_vs) ** 2, axis=0)
+    indxs = np.argmax(np.abs(inv_vs) ** 2, axis=0)
+    indx_map = {val: idx for idx, val in enumerate(indxs)}
+
+
 
     idxs = range(1, m)
     iterator = tqdm(idxs, desc="Time to complete eigval diag+shuffle", unit="matrix") if progress else idxs
@@ -441,7 +444,9 @@ def eigenshuffle_eigvals(
 
     # Use first set of eigenvectors for state mapping
     inv_vs = np.linalg.inv(vecs)
-    indx_map = np.argmax(np.abs(inv_vs) ** 2, axis=0)
+    indxs = np.argmax(np.abs(inv_vs) ** 2, axis=0)
+    indx_map = {val: idx for idx, val in enumerate(indxs)}
+
 
     idxs = range(1, m)
     iterator = tqdm(idxs, desc="Time to complete eigval diag+shuffle", unit="matrix") if progress else idxs
