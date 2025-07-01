@@ -375,6 +375,8 @@ def eigenshuffle_eighvals(
         inv_vs = cp.linalg.inv(cp.asarray(vecs))
         abs_sq = cp.abs(inv_vs) ** 2
         indx_map = cp.asnumpy(cp.argmax(abs_sq, axis=0))
+        del inv_vs
+        del abs_sq
     else:
         inv_vs = np.linalg.inv(vecs)
         indx_map = np.argmax(np.abs(inv_vs) ** 2, axis=0)
