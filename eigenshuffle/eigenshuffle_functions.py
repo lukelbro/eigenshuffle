@@ -402,6 +402,7 @@ def eigenshuffle_eigvals(
     progress: bool = True,
     dtype: np.dtype | None = None,
     count: int | None = None,
+    use_mlx: bool = False,  # New argument
 ) -> tuple[npt.NDArray[np.floating] | npt.NDArray[np.complexfloating], npt.NDArray[np.int_]]:
     """
     Compute eigenvalues only with eig (general, not Hermitian) of a series of matrices (mxnxn) and keep eigenvalues consistently sorted; starting with the lowest eigenvalue.
@@ -412,6 +413,7 @@ def eigenshuffle_eigvals(
         progress: show progress bar if True.
         dtype: Desired dtype for output.
         count: Number of matrices when using a generator.
+        use_mlx: Use mlx for eigenvalue computation if True.
 
     Returns:
         tuple: (sorted eigenvalues, indx_map from first set of eigenvectors)
@@ -435,8 +437,18 @@ def eigenshuffle_eigvals(
 
     values = np.empty((m, n), dtype=out_dtype)
 
+    if use_mlx:
+        import mlx.core as mx
+        def eig_func(mat):
+            A_mx = mx.array(mat, dtype=mx.float32)
+            eigvals_mx, eigvecs_mx = mx.linalg.eig(A_mx, stream=mx.cpu)
+            return np.array(eigvals_mx, copy=False), np.array(eigvecs_mx, copy=False)
+    else:
+        def eig_func(mat):
+            return np.linalg.eig(mat)
+
     # diagonalize, sort initial frame
-    vals, vecs = np.linalg.eig(sample)
+    vals, vecs = eig_func(sample)
     idx_sort = np.argsort(vals.real)
     vals, vecs = vals[idx_sort], vecs[:, idx_sort]
     values[0] = vals
@@ -447,12 +459,11 @@ def eigenshuffle_eigvals(
     indxs = np.argmax(np.abs(inv_vs) ** 2, axis=0)
     indx_map = {val: idx for idx, val in enumerate(indxs)}
 
-
     idxs = range(1, m)
     iterator = tqdm(idxs, desc="Time to complete eigval diag+shuffle", unit="matrix") if progress else idxs
     for i in iterator:
         mat = get_mat(i)
-        vals, vecs = np.linalg.eig(mat)
+        vals, vecs = eig_func(mat)
         idx_sort = np.argsort(vals.real)
         vals, vecs = vals[idx_sort], vecs[:, idx_sort]
         distance = 1 - np.abs(prev_vecs.T @ vecs)
