@@ -8,7 +8,7 @@ from tqdm.notebook import tqdm
 
 
 
-__all__ = ["eigenshuffle_eig", "eigenshuffle_eigh", "eigenshuffle_eighvals"]
+__all__ = ["eigenshuffle_eig", "eigenshuffle_eigh", "eigenshuffle_eighvals", "eigenshuffle_eigvals"]
 
 eigenvals_complex_or_float = TypeVar(
     "eigenvals_complex_or_float",
@@ -352,45 +352,102 @@ def eigenshuffle_eighvals(
     n = sample.shape[-1]
     in_dtype = sample.dtype
     out_dtype = dtype if dtype is not None else np.promote_types(in_dtype, np.complex64)
-    if use_gpu:
-        import importlib
-        cp = importlib.import_module("cupy")
 
     values = np.empty((m, n), dtype=out_dtype)
 
     # diagonalize, sort initial frame
-    if use_gpu:
-        mat0_gpu = cp.asarray(sample, dtype=out_dtype)
-        v0_gpu, e0_gpu = cp.linalg.eigh(mat0_gpu)
-        vals, vecs = cp.asnumpy(v0_gpu), cp.asnumpy(e0_gpu)
-    else:
-        vals, vecs = np.linalg.eigh(sample)
+    vals, vecs = np.linalg.eigh(sample)
     idx_sort = np.argsort(vals.real)
     vals, vecs = vals[idx_sort], vecs[:, idx_sort]
     values[0] = vals
     prev_vecs = vecs
 
     # Use first set of eigenvectors for state mapping
-    if use_gpu:
-        inv_vs = cp.linalg.inv(cp.asarray(vecs))
-        abs_sq = cp.abs(inv_vs) ** 2
-        indx_map = cp.asnumpy(cp.argmax(abs_sq, axis=0))
-        del inv_vs
-        del abs_sq
-    else:
-        inv_vs = np.linalg.inv(vecs)
-        indx_map = np.argmax(np.abs(inv_vs) ** 2, axis=0)
+    inv_vs = np.linalg.inv(vecs)
+    indx_map = np.argmax(np.abs(inv_vs) ** 2, axis=0)
 
     idxs = range(1, m)
     iterator = tqdm(idxs, desc="Time to complete eigval diag+shuffle", unit="matrix") if progress else idxs
     for i in iterator:
         mat = get_mat(i)
-        if use_gpu:
-            mg = cp.asarray(mat, dtype=out_dtype)
-            v_gpu, e_gpu = cp.linalg.eigh(mg)
-            vals, vecs = cp.asnumpy(v_gpu), cp.asnumpy(e_gpu)
-        else:
-            vals, vecs = np.linalg.eigh(mat)
+        vals, vecs = np.linalg.eigh(mat)
+        idx_sort = np.argsort(vals.real)
+        vals, vecs = vals[idx_sort], vecs[:, idx_sort]
+        distance = 1 - np.abs(prev_vecs.T @ vecs)
+        if use_eigenvalues:
+            dist_vals = np.sqrt(
+                distance_matrix(values[i-1].real, vals.real)**2 +
+                distance_matrix(values[i-1].imag, vals.imag)**2
+            )
+            distance *= dist_vals
+        _, col_ind = linear_sum_assignment(distance)
+        vals, vecs = vals[col_ind], vecs[:, col_ind]
+        dot = np.sum(prev_vecs * vecs, axis=0).real
+        flip = -(((dot < 0).astype(int) * 2) + 1)
+        vecs *= flip
+        values[i] = vals
+        prev_vecs = vecs
+    return values, indx_map
+
+
+def eigenshuffle_eigvals(
+    matrices: Sequence[npt.NDArray[np.floating]]
+    | npt.NDArray[np.floating]
+    | Sequence[npt.NDArray[np.complexfloating]]
+    | npt.NDArray[np.complexfloating],
+    use_eigenvalues: bool = False,
+    progress: bool = True,
+    dtype: np.dtype | None = None,
+    count: int | None = None,
+) -> tuple[npt.NDArray[np.floating] | npt.NDArray[np.complexfloating], npt.NDArray[np.int_]]:
+    """
+    Compute eigenvalues only with eig (general, not Hermitian) of a series of matrices (mxnxn) and keep eigenvalues consistently sorted; starting with the lowest eigenvalue.
+
+    Args:
+        matrices: mxnxn array of eigenvalue problems
+        use_eigenvalues: Use the distance between successive eigenvalues as part of the shuffling. Defaults to False.
+        progress: show progress bar if True.
+        dtype: Desired dtype for output.
+        count: Number of matrices when using a generator.
+
+    Returns:
+        tuple: (sorted eigenvalues, indx_map from first set of eigenvectors)
+    """
+    is_callable = callable(matrices)
+    if is_callable and count is None:
+        raise ValueError("`count` must be provided when passing a matrix factory")
+    if is_callable:
+        m = count
+        get_mat = lambda i: matrices(i)
+    else:
+        arr = np.asarray(matrices)
+        assert arr.ndim == 3, "matrices must be shape m×n×n"
+        m = arr.shape[0]
+        get_mat = lambda i: arr[i]
+
+    sample = get_mat(0)
+    n = sample.shape[-1]
+    in_dtype = sample.dtype
+    out_dtype = dtype if dtype is not None else np.promote_types(in_dtype, np.complex64)
+
+    values = np.empty((m, n), dtype=out_dtype)
+
+    # diagonalize, sort initial frame
+    vals, vecs = np.linalg.eig(sample)
+    idx_sort = np.argsort(vals.real)
+    vals, vecs = vals[idx_sort], vecs[:, idx_sort]
+    values[0] = vals
+    prev_vecs = vecs
+
+    # Use first set of eigenvectors for state mapping
+    inv_vs = np.linalg.inv(vecs)
+    indx_map = np.argmax(np.abs(inv_vs) ** 2, axis=0)
+
+    idxs = range(1, m)
+    iterator = tqdm(idxs, desc="Time to complete eigval diag+shuffle", unit="matrix") if progress else idxs
+    for i in iterator:
+        mat = get_mat(i)
+        vals, vecs = np.linalg.eig(mat)
         idx_sort = np.argsort(vals.real)
         vals, vecs = vals[idx_sort], vecs[:, idx_sort]
         distance = 1 - np.abs(prev_vecs.T @ vecs)
