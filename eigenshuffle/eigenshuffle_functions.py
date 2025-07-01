@@ -7,7 +7,8 @@ from tqdm.notebook import tqdm
 
 
 
-__all__ = ["eigenshuffle_eig", "eigenshuffle_eigh", "eigenshuffle_eigvals"]
+
+__all__ = ["eigenshuffle_eig", "eigenshuffle_eigh", "eigenshuffle_eighvals"]
 
 eigenvals_complex_or_float = TypeVar(
     "eigenvals_complex_or_float",
@@ -310,7 +311,7 @@ def eigenshuffle_eig(
     )
 
 
-def eigenshuffle_eigvals(
+def eigenshuffle_eighvals(
     matrices: Sequence[npt.NDArray[np.floating]]
     | npt.NDArray[np.floating]
     | Sequence[npt.NDArray[np.complexfloating]]
@@ -320,9 +321,9 @@ def eigenshuffle_eigvals(
     dtype: np.dtype | None = None,
     use_gpu: bool = False,
     count: int | None = None,
-) -> npt.NDArray[np.floating] | npt.NDArray[np.complexfloating]:
+) -> tuple[npt.NDArray[np.floating] | npt.NDArray[np.complexfloating], npt.NDArray[np.int_]]:
     """
-    Compute eigenvalues only with eig of a series of matrices (mxnxn) and keep eigenvalues consistently sorted; starting with the lowest eigenvalue.
+    Compute eigenvalues only with eigh (Hermitian) of a series of matrices (mxnxn) and keep eigenvalues consistently sorted; starting with the lowest eigenvalue.
 
     Args:
         matrices: mxnxn array of eigenvalue problems
@@ -333,10 +334,8 @@ def eigenshuffle_eigvals(
         count: Number of matrices when using a generator.
 
     Returns:
-        npt.NDArray[np.floating] | npt.NDArray[np.complexfloating]: sorted eigenvalues
+        tuple: (sorted eigenvalues, indx_map from first set of eigenvectors)
     """
-    # Memory-efficient iterative eigenvalue shuffle: only two eigenvector sets in memory
-    # prepare matrix sequence or factory
     is_callable = callable(matrices)
     if is_callable and count is None:
         raise ValueError("`count` must be provided when passing a matrix factory")
@@ -349,7 +348,6 @@ def eigenshuffle_eigvals(
         m = arr.shape[0]
         get_mat = lambda i: arr[i]
 
-    # infer dtype, size, GPU setup
     sample = get_mat(0)
     n = sample.shape[-1]
     in_dtype = sample.dtype
@@ -358,7 +356,6 @@ def eigenshuffle_eigvals(
         import importlib
         cp = importlib.import_module("cupy")
 
-    # allocate eigenvalues array
     values = np.empty((m, n), dtype=out_dtype)
 
     # diagonalize, sort initial frame
@@ -367,7 +364,7 @@ def eigenshuffle_eigvals(
         v0_gpu, e0_gpu = cp.linalg.eigh(mat0_gpu)
         vals, vecs = cp.asnumpy(v0_gpu), cp.asnumpy(e0_gpu)
     else:
-        vals, vecs = np.linalg.eig(sample)
+        vals, vecs = np.linalg.eigh(sample)
     idx_sort = np.argsort(vals.real)
     vals, vecs = vals[idx_sort], vecs[:, idx_sort]
     values[0] = vals
@@ -382,8 +379,6 @@ def eigenshuffle_eigvals(
         inv_vs = np.linalg.inv(vecs)
         indx_map = np.argmax(np.abs(inv_vs) ** 2, axis=0)
 
-    
-    # iterate through remaining matrices
     idxs = range(1, m)
     iterator = tqdm(idxs, desc="Time to complete eigval diag+shuffle", unit="matrix") if progress else idxs
     for i in iterator:
@@ -393,11 +388,9 @@ def eigenshuffle_eigvals(
             v_gpu, e_gpu = cp.linalg.eigh(mg)
             vals, vecs = cp.asnumpy(v_gpu), cp.asnumpy(e_gpu)
         else:
-            vals, vecs = np.linalg.eig(mat)
-        # per-frame sort
+            vals, vecs = np.linalg.eigh(mat)
         idx_sort = np.argsort(vals.real)
         vals, vecs = vals[idx_sort], vecs[:, idx_sort]
-        # compute shuffle assignment
         distance = 1 - np.abs(prev_vecs.T @ vecs)
         if use_eigenvalues:
             dist_vals = np.sqrt(
@@ -407,10 +400,9 @@ def eigenshuffle_eigvals(
             distance *= dist_vals
         _, col_ind = linear_sum_assignment(distance)
         vals, vecs = vals[col_ind], vecs[:, col_ind]
-        # enforce sign consistency
         dot = np.sum(prev_vecs * vecs, axis=0).real
         flip = -(((dot < 0).astype(int) * 2) + 1)
         vecs *= flip
         values[i] = vals
         prev_vecs = vecs
-    return values, indx_map 
+    return values, indx_map
