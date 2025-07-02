@@ -350,6 +350,8 @@ def eigenshuffle_eighvals(
         m = arr.shape[0]
         get_mat = lambda i: arr[i]
 
+    if progress and is_callable:
+        _tqdm.write("Generating matrix elements..")
     sample = get_mat(0)
     n = sample.shape[-1]
     in_dtype = sample.dtype
