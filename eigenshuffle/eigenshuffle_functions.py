@@ -382,7 +382,7 @@ def eigenshuffle_eighvals(
         import jax
         import jax.numpy as jnp
         from jax import device_put, jit
-        from hungarian_cover import hungarian_single
+        from eigenshuffle.hungarian_cover import hungarian_single
         # JIT compile once outside the loop
         hungarian_single_jit = jit(hungarian_single)
         jax_gpu_available = any([d.platform == 'gpu' for d in jax.devices()])
