@@ -380,15 +380,25 @@ def eigenshuffle_eighvals(
         from eigenshuffle.hungarian_cover import hungarian_cover_matcher
 
     # diagonalize, sort initial frame
+    if progress:
+        from tqdm import tqdm as _tqdm
+        _tqdm.write("Diagonalizing first matrix...")
     vals, vecs = eigh_func(sample)
     # idx_sort = np.argsort(vals.real)
     # vals, vecs = vals[idx_sort], vecs[:, idx_sort]
     values[0] = vals
     prev_vecs = vecs
 
+    if progress:
+        _tqdm.write("Calculating state mapping")
+        _tqdm.write("(a)inverting eigenvector matrix")
     # Use first set of eigenvectors for state mapping
     inv_vs = np.linalg.inv(vecs)
+    if progress:
+        _tqdm.write("(b) calculating abs(v)^2")
     indxs = np.argmax(np.abs(inv_vs) ** 2, axis=0)
+    if progress:
+        _tqdm.write("(c) mapping state indices")
     indx_map = {val: idx for idx, val in enumerate(indxs)}
 
     idxs = range(1, m)
