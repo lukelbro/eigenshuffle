@@ -381,8 +381,8 @@ def eigenshuffle_eighvals(
 
     # diagonalize, sort initial frame
     vals, vecs = eigh_func(sample)
-    idx_sort = np.argsort(vals.real)
-    vals, vecs = vals[idx_sort], vecs[:, idx_sort]
+    # idx_sort = np.argsort(vals.real)
+    # vals, vecs = vals[idx_sort], vecs[:, idx_sort]
     values[0] = vals
     prev_vecs = vecs
 
@@ -396,8 +396,8 @@ def eigenshuffle_eighvals(
     for i in iterator:
         mat = get_mat(i)
         vals, vecs = eigh_func(mat)
-        idx_sort = np.argsort(vals.real)
-        vals, vecs = vals[idx_sort], vecs[:, idx_sort]
+        # idx_sort = np.argsort(vals.real)
+        # vals, vecs = vals[idx_sort], vecs[:, idx_sort]
         distance = 1 - np.abs(prev_vecs.T @ vecs)
         if use_eigenvalues:
             dist_vals = np.sqrt(
