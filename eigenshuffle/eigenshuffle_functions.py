@@ -351,6 +351,7 @@ def eigenshuffle_eighvals(
         get_mat = lambda i: arr[i]
 
     if progress and is_callable:
+        from tqdm import tqdm as _tqdm
         _tqdm.write("Generating matrix elements..")
     sample = get_mat(0)
     n = sample.shape[-1]
@@ -383,7 +384,6 @@ def eigenshuffle_eighvals(
 
     # diagonalize, sort initial frame
     if progress:
-        from tqdm import tqdm as _tqdm
         _tqdm.write("Diagonalizing first matrix...")
     vals, vecs = eigh_func(sample)
     # idx_sort = np.argsort(vals.real)
