@@ -360,8 +360,25 @@ def eigenshuffle_eighvals(
 
     values = np.empty((m, n), dtype=out_dtype)
 
-    # Setup GPU if requested
-    if use_gpu:
+    # Set up diagonalization function for all four cases
+    if use_jax:
+        import jax
+        import jax.numpy as jnp
+        from jax import device_put, jit
+        from eigenshuffle.hungarian_cover import hungarian_single
+        hungarian_single_jit = jit(hungarian_single)
+        jax_gpu_available = any([d.platform == 'gpu' for d in jax.devices()])
+        def eigh_func(mat):
+            # JAX + GPU
+            if use_gpu and jax_gpu_available:
+                mat_jax = device_put(mat.astype(np.complex64), device=jax.devices('gpu')[0])
+            # JAX + CPU
+            else:
+                mat_jax = jnp.asarray(mat)
+            vals, vecs = jnp.linalg.eigh(mat_jax)
+            return np.array(vals), np.array(vecs)
+    elif use_gpu:
+        # CuPy (GPU, not JAX)
         try:
             import importlib
             cp = importlib.import_module("cupy")
@@ -374,18 +391,9 @@ def eigenshuffle_eighvals(
             vecs = cp.asnumpy(vecs_gpu)
             return vals, vecs
     else:
+        # NumPy (CPU, not JAX)
         def eigh_func(mat):
             return np.linalg.eigh(mat)
-
-    # Optionally import and JIT-compile JAX matcher
-    if use_jax:
-        import jax
-        import jax.numpy as jnp
-        from jax import device_put, jit
-        from eigenshuffle.hungarian_cover import hungarian_single
-        # JIT compile once outside the loop
-        hungarian_single_jit = jit(hungarian_single)
-        jax_gpu_available = any([d.platform == 'gpu' for d in jax.devices()])
 
     # diagonalize, sort initial frame
     if progress:
