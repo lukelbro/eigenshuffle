@@ -377,28 +377,43 @@ def eigenshuffle_eighvals(
         def eigh_func(mat):
             return np.linalg.eigh(mat)
 
-    # Optionally import JAX matcher
+    # Optionally import and JIT-compile JAX matcher
     if use_jax:
+        import jax
         import jax.numpy as jnp
-        from eigenshuffle.hungarian_cover import hungarian_cover_matcher
+        from jax import device_put, jit
+        from hungarian_cover import hungarian_single
+        # JIT compile once outside the loop
+        hungarian_single_jit = jit(hungarian_single)
+        jax_gpu_available = any([d.platform == 'gpu' for d in jax.devices()])
 
     # diagonalize, sort initial frame
     if progress:
         _tqdm.write("Diagonalizing first matrix...")
     vals, vecs = eigh_func(sample)
-    # idx_sort = np.argsort(vals.real)
-    # vals, vecs = vals[idx_sort], vecs[:, idx_sort]
     values[0] = vals
     prev_vecs = vecs
 
     if progress:
         _tqdm.write("Calculating state mapping")
-        _tqdm.write("(a)inverting eigenvector matrix")
+        _tqdm.write("(a) inverting eigenvector matrix")
     # Use first set of eigenvectors for state mapping
-    inv_vs = np.linalg.inv(vecs)
-    if progress:
-        _tqdm.write("(b) calculating abs(v)^2")
-    indxs = np.argmax(np.abs(inv_vs) ** 2, axis=0)
+    if use_gpu:
+        try:
+            import importlib
+            cp = importlib.import_module("cupy")
+        except ImportError:
+            raise ImportError("CuPy is required for GPU diagonalization. Install cupy-cudaXX.")
+        inv_vs_gpu = cp.linalg.inv(cp.asarray(vecs))
+        if progress:
+            _tqdm.write("(b) calculating abs(v)^2 and argmax on GPU")
+        indxs_gpu = cp.argmax(cp.abs(inv_vs_gpu) ** 2, axis=0)
+        indxs = cp.asnumpy(indxs_gpu)
+    else:
+        inv_vs = np.linalg.inv(vecs)
+        if progress:
+            _tqdm.write("(b) calculating abs(v)^2 and argmax on CPU")
+        indxs = np.argmax(np.abs(inv_vs) ** 2, axis=0)
     if progress:
         _tqdm.write("(c) mapping state indices")
     indx_map = {val: idx for idx, val in enumerate(indxs)}
@@ -408,8 +423,6 @@ def eigenshuffle_eighvals(
     for i in iterator:
         mat = get_mat(i)
         vals, vecs = eigh_func(mat)
-        # idx_sort = np.argsort(vals.real)
-        # vals, vecs = vals[idx_sort], vecs[:, idx_sort]
         distance = 1 - np.abs(prev_vecs.T @ vecs)
         if use_eigenvalues:
             dist_vals = np.sqrt(
@@ -418,11 +431,12 @@ def eigenshuffle_eighvals(
             )
             distance *= dist_vals
         if use_jax:
-            # Use JAX-based Hungarian matcher
-            distance_jax = jnp.asarray(distance)
-            distance_jax = distance_jax[None, :, :]  # Add batch dim
-            assignment = hungarian_cover_matcher(distance_jax)
-            col_ind = np.array(assignment[0, 1])
+            if use_gpu:
+                distance_jax = device_put(distance.astype(np.float32), device=jax.devices('gpu')[0])
+            else:
+                distance_jax = jnp.asarray(distance)
+            assignment = hungarian_single_jit(distance_jax)
+            col_ind = np.array(assignment[1])
         else:
             _, col_ind = linear_sum_assignment(distance)
         vals, vecs = vals[col_ind], vecs[:, col_ind]
@@ -495,7 +509,7 @@ def eigenshuffle_eigvals(
     values[0] = vals
     prev_vecs = vecs
 
-    # Use first set of eigenvectors for state mapping
+   
     inv_vs = np.linalg.inv(vecs)
     indxs = np.argmax(np.abs(inv_vs) ** 2, axis=0)
     indx_map = {val: idx for idx, val in enumerate(indxs)}
