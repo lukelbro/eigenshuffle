@@ -319,8 +319,9 @@ def eigenshuffle_eighvals(
     use_eigenvalues: bool = False,
     progress: bool = True,
     dtype: np.dtype | None = None,
-    use_gpu: bool = False,
+    use_gpu: bool = False, 
     count: int | None = None,
+    use_jax: bool = False,  # New argument
 ) -> tuple[npt.NDArray[np.floating] | npt.NDArray[np.complexfloating], npt.NDArray[np.int_]]:
     """
     Compute eigenvalues only with eigh (Hermitian) of a series of matrices (mxnxn) and keep eigenvalues consistently sorted; starting with the lowest eigenvalue.
@@ -332,6 +333,7 @@ def eigenshuffle_eighvals(
         dtype: Desired dtype for output.
         use_gpu: Use GPU for diagonalization if True.
         count: Number of matrices when using a generator.
+        use_jax: Use JAX-based Hungarian matcher for assignment if True.
 
     Returns:
         tuple: (sorted eigenvalues, indx_map from first set of eigenvectors)
@@ -355,8 +357,30 @@ def eigenshuffle_eighvals(
 
     values = np.empty((m, n), dtype=out_dtype)
 
+    # Setup GPU if requested
+    if use_gpu:
+        try:
+            import importlib
+            cp = importlib.import_module("cupy")
+        except ImportError:
+            raise ImportError("CuPy is required for GPU diagonalization. Install cupy-cudaXX.")
+        def eigh_func(mat):
+            mat_gpu = cp.asarray(mat, dtype=out_dtype)
+            vals_gpu, vecs_gpu = cp.linalg.eigh(mat_gpu)
+            vals = cp.asnumpy(vals_gpu)
+            vecs = cp.asnumpy(vecs_gpu)
+            return vals, vecs
+    else:
+        def eigh_func(mat):
+            return np.linalg.eigh(mat)
+
+    # Optionally import JAX matcher
+    if use_jax:
+        import jax.numpy as jnp
+        from eigenshuffle.hungarian_cover import hungarian_cover_matcher
+
     # diagonalize, sort initial frame
-    vals, vecs = np.linalg.eigh(sample)
+    vals, vecs = eigh_func(sample)
     idx_sort = np.argsort(vals.real)
     vals, vecs = vals[idx_sort], vecs[:, idx_sort]
     values[0] = vals
@@ -367,13 +391,11 @@ def eigenshuffle_eighvals(
     indxs = np.argmax(np.abs(inv_vs) ** 2, axis=0)
     indx_map = {val: idx for idx, val in enumerate(indxs)}
 
-
-
     idxs = range(1, m)
     iterator = tqdm(idxs, desc="Time to complete eigval diag+shuffle", unit="matrix") if progress else idxs
     for i in iterator:
         mat = get_mat(i)
-        vals, vecs = np.linalg.eigh(mat)
+        vals, vecs = eigh_func(mat)
         idx_sort = np.argsort(vals.real)
         vals, vecs = vals[idx_sort], vecs[:, idx_sort]
         distance = 1 - np.abs(prev_vecs.T @ vecs)
@@ -383,7 +405,14 @@ def eigenshuffle_eighvals(
                 distance_matrix(values[i-1].imag, vals.imag)**2
             )
             distance *= dist_vals
-        _, col_ind = linear_sum_assignment(distance)
+        if use_jax:
+            # Use JAX-based Hungarian matcher
+            distance_jax = jnp.asarray(distance)
+            distance_jax = distance_jax[None, :, :]  # Add batch dim
+            assignment = hungarian_cover_matcher(distance_jax)
+            col_ind = np.array(assignment[0, 1])
+        else:
+            _, col_ind = linear_sum_assignment(distance)
         vals, vecs = vals[col_ind], vecs[:, col_ind]
         dot = np.sum(prev_vecs * vecs, axis=0).real
         flip = -(((dot < 0).astype(int) * 2) + 1)
