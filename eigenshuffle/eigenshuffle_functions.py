@@ -3,8 +3,9 @@ from typing import Literal, Sequence, TypeVar, overload
 import numpy as np
 import numpy.typing as npt
 from scipy.optimize import linear_sum_assignment
-from tqdm.notebook import tqdm
 
+from tqdm import tqdm as std_tqdm
+from tqdm.notebook import tqdm
 
 
 
@@ -427,7 +428,7 @@ def eigenshuffle_eighvals(
     indx_map = {val: idx for idx, val in enumerate(indxs)}
 
     idxs = range(1, m)
-    iterator = tqdm(idxs, desc="Time to complete eigval diag+shuffle", unit="matrix") if progress else idxs
+    iterator = std_tqdm(idxs, desc="Time to complete eigval diag+shuffle", unit="matrix") if progress else idxs
     for i in iterator:
         mat = get_mat(i)
         vals, vecs = eigh_func(mat)
