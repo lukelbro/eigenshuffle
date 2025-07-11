@@ -4,8 +4,15 @@ import numpy as np
 import numpy.typing as npt
 from scipy.optimize import linear_sum_assignment
 
-from tqdm import tqdm as std_tqdm
-from tqdm.notebook import tqdm
+from tqdm import tqdm
+
+
+class LineLoggingTQDM(tqdm):
+    def __iter__(self):
+        for item in super().__iter__():
+            msg = self.format_meter(**self.format_dict)
+            tqdm.write(f"{self.desc or ''} | {msg}")
+            yield item
 
 
 
@@ -428,7 +435,7 @@ def eigenshuffle_eighvals(
     indx_map = {val: idx for idx, val in enumerate(indxs)}
 
     idxs = range(1, m)
-    iterator = std_tqdm(idxs, desc="Time to complete eigval diag+shuffle", unit="matrix") if progress else idxs
+    iterator =  LineLoggingTQDM(idxs, desc="Time to complete eigval diag+shuffle", unit="matrix") if progress else idxs
     for i in iterator:
         mat = get_mat(i)
         vals, vecs = eigh_func(mat)
@@ -545,3 +552,5 @@ def eigenshuffle_eigvals(
         values[i] = vals
         prev_vecs = vecs
     return values, indx_map
+
+
