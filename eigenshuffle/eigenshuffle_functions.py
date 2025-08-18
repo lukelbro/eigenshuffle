@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 
 
-
+import jax.numpy as jnp
 
 
 def hungarian_single_sorted(cost):
