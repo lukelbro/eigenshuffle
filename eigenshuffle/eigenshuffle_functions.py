@@ -446,6 +446,8 @@ def eigenshuffle_eighvals(
     if use_jit_sort:
         import jax
         import jax.numpy as jnp
+        from jax import device_put, jit
+        
         hungarian_single_jit = jit(hungarian_single_sorted)
         
     is_callable = callable(matrices)
