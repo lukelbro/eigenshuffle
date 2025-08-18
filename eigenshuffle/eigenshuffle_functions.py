@@ -7,6 +7,10 @@ from scipy.optimize import linear_sum_assignment
 from tqdm import tqdm
 
 
+
+
+
+
 def hungarian_single_sorted(cost):
   """
   JAX-based Hungarian matcher for a single square cost matrix.
@@ -456,9 +460,11 @@ def eigenshuffle_eighvals(
         m = arr.shape[0]
         get_mat = lambda i: arr[i]
 
-    if progress and is_callable:
+    if progress:
         from tqdm import tqdm as _tqdm
-        _tqdm.write("Generating matrix elements..")
+        if is_callable:
+            _tqdm.write("Generating matrix elements..")
+
     sample = get_mat(0)
     n = sample.shape[-1]
     in_dtype = sample.dtype
@@ -652,3 +658,5 @@ def eigenshuffle_eigvals(
         values[i] = vals
         prev_vecs = vecs
     return values, indx_map
+
+
