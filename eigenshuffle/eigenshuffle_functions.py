@@ -7,6 +7,98 @@ from scipy.optimize import linear_sum_assignment
 from tqdm import tqdm
 
 
+def hungarian_single_sorted(cost):
+  """
+  JAX-based Hungarian matcher for a single square cost matrix.
+
+  This function is a modification of the Scenic/Optax implementation that
+  returns the assignment with row indices sorted 0 to n-1, matching the
+  output format of `scipy.optimize.linear_sum_assignment`.
+
+  Args:
+    cost: An [n, n] square cost matrix.
+
+  Returns:
+    A tuple of two JAX arrays: (row_indices, col_indices).
+    - row_indices: Sorted indices of rows, will be `[0, 1, ..., n-1]`.
+    - col_indices: The column index assigned to each corresponding row.
+  """
+  n, m = cost.shape
+  assert n == m, "This simplified function requires a square cost matrix."
+
+  one_hot_m = jnp.eye(m + 1)
+
+  def row_scan_fn(state, i):
+    """Main loop over the rows of the cost matrix."""
+    u, v, parent = state
+    parent = jax.lax.dynamic_update_index_in_dim(parent, i, 0, axis=0)
+
+    def dfs_body_fn(state):
+      """Inner loop body to find an augmenting path (DFS)."""
+      u, v, used, minv, way, j0 = state
+      used = jnp.logical_or(used, one_hot_m[j0])
+      used_slice = used[1:]
+      i0 = parent[j0]
+      cur = cost[i0 - 1, :] - u[i0] - v[1:]
+      cur = jnp.where(used_slice, jnp.full_like(cur, 1e10), cur)
+      way = jnp.where(cur < minv, jnp.full_like(way, j0), way)
+      minv = jnp.where(cur < minv, cur, minv)
+      masked_minv = jnp.where(used_slice, jnp.full_like(minv, 1e10), minv)
+      j1 = jnp.argmin(masked_minv) + 1
+      delta = jnp.min(minv, initial=1e10, where=jnp.logical_not(used_slice))
+      indices = jnp.where(used, parent, n + 1)
+      u = u.at[indices].add(delta)
+      v = jnp.where(used, v - delta, v)
+      minv = jnp.where(jnp.logical_not(used_slice), minv - delta, minv)
+      return (u, v, used, minv, way, j1)
+
+    def dfs_cond_fn(state):
+      """Inner loop condition."""
+      _, _, _, _, _, j0 = state
+      return parent[j0] != 0
+
+    way = jnp.zeros((m,), dtype=jnp.int64)
+    used = jnp.zeros((m + 1,), dtype=jnp.bool_)
+    minv = jnp.full((m,), 1e10, dtype=cost.dtype)
+    init_state = (u, v, used, minv, way, 0)
+    state = jax.lax.while_loop(dfs_cond_fn, dfs_body_fn, init_state)
+    u, v, _, _, way, j0 = state
+
+    def update_parent_body_fn(state):
+      """Backtrack the DFS path to update assignments."""
+      parent, j0 = state
+      j1 = way[j0 - 1]
+      parent = jax.lax.dynamic_update_index_in_dim(
+          parent, parent[j1], j0, axis=0)
+      return (parent, j1)
+
+    def update_parent_cond_fn(state):
+      """Backtracking condition."""
+      _, j0 = state
+      return j0 != 0
+
+    init_state = (parent, j0)
+    parent, _ = jax.lax.while_loop(
+        update_parent_cond_fn, update_parent_body_fn, init_state)
+    return (u, v, parent), None
+
+  u = jnp.zeros((n + 2,), dtype=cost.dtype)
+  v = jnp.zeros((m + 1,), dtype=cost.dtype)
+  parent = jnp.zeros((m + 1,), dtype=jnp.int64)
+  init_state = (u, v, parent)
+  (u, v, parent), _ = jax.lax.scan(
+      row_scan_fn, init_state, jnp.arange(1, n + 1))
+
+  col_to_row_assignment = parent[1:] - 1
+  row_indices = jnp.arange(n)
+  col_indices = jnp.zeros(n, dtype=jnp.int64).at[col_to_row_assignment].set(jnp.arange(m))
+
+  return row_indices, col_indices
+
+
+
+
+
 class LineLoggingTQDM(tqdm):
     def __iter__(self):
         for item in super().__iter__():
@@ -329,7 +421,8 @@ def eigenshuffle_eighvals(
     dtype: np.dtype | None = None,
     use_gpu: bool = False, 
     count: int | None = None,
-    use_jax: bool = False,  # New argument
+    use_jax: bool = False,
+    use_jit_sort: bool = False
 ) -> tuple[npt.NDArray[np.floating] | npt.NDArray[np.complexfloating], npt.NDArray[np.int_]]:
     """
     Compute eigenvalues only with eigh (Hermitian) of a series of matrices (mxnxn) and keep eigenvalues consistently sorted; starting with the lowest eigenvalue.
@@ -346,6 +439,11 @@ def eigenshuffle_eighvals(
     Returns:
         tuple: (sorted eigenvalues, indx_map from first set of eigenvectors)
     """
+    if use_jit_sort:
+        import jax
+        import jax.numpy as jnp
+        hungarian_single_jit = jit(hungarian_single_sorted)
+        
     is_callable = callable(matrices)
     if is_callable and count is None:
         raise ValueError("`count` must be provided when passing a matrix factory")
@@ -453,6 +551,8 @@ def eigenshuffle_eighvals(
                 distance_jax = jnp.asarray(distance)
             assignment = hungarian_single_jit(distance_jax)
             col_ind = np.array(assignment[1])
+        if use_jit_sort:
+             _, col_ind = hungarian_single_jit(distance)
         else:
             _, col_ind = linear_sum_assignment(distance)
         vals, vecs = vals[col_ind], vecs[:, col_ind]
@@ -552,5 +652,3 @@ def eigenshuffle_eigvals(
         values[i] = vals
         prev_vecs = vecs
     return values, indx_map
-
-
