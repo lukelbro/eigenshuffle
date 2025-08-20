@@ -113,7 +113,7 @@ class LineLoggingTQDM(tqdm):
 
 
 
-__all__ = ["eigenshuffle_eig", "eigenshuffle_eigh", "eigenshuffle_eighvals", "eigenshuffle_eigvals"]
+__all__ = ["eigenshuffle_eig", "eigenshuffle_eigh", "eigenshuffle_eighvals", "eigenshuffle_eigvals", "eigenshuffle_eighvals_turbo"]
 
 eigenvals_complex_or_float = TypeVar(
     "eigenvals_complex_or_float",
@@ -553,6 +553,7 @@ def eigenshuffle_eighvals(
                 distance_matrix(values[i-1].imag, vals.imag)**2
             )
             distance *= dist_vals
+        
         if use_jax:
             if use_gpu:
                 distance_jax = device_put(distance.astype(np.float32), device=jax.devices('gpu')[0])
@@ -560,7 +561,7 @@ def eigenshuffle_eighvals(
                 distance_jax = jnp.asarray(distance)
             assignment = hungarian_single_jit(distance_jax)
             col_ind = np.array(assignment[1])
-        if use_jit_sort:
+        elif use_jit_sort:
              _, col_ind = hungarian_single_jit(distance)
         else:
             _, col_ind = linear_sum_assignment(distance)
@@ -660,6 +661,142 @@ def eigenshuffle_eigvals(
         vecs *= flip
         values[i] = vals
         prev_vecs = vecs
+    return values, indx_map
+
+
+def eigenshuffle_eighvals_turbo(
+    matrices: Sequence[npt.NDArray[np.floating]]
+    | npt.NDArray[np.floating]
+    | Sequence[npt.NDArray[np.complexfloating]]
+    | npt.NDArray[np.complexfloating],
+    use_eigenvalues: bool = False,
+    progress: bool = True,
+    dtype: np.dtype | None = None,
+    count: int | None = None,
+    max_workers: int | None = None,
+) -> tuple[npt.NDArray[np.floating] | npt.NDArray[np.complexfloating], npt.NDArray[np.int_]]:
+    """
+    Fast compute eigenvalues only with eigh (Hermitian) using concurrent execution to overlap
+    matrix diagonalization with Hungarian assignment. Simplified version with fewer options
+    for better performance.
+
+    Args:
+        matrices: mxnxn array of eigenvalue problems
+        use_eigenvalues: Use the distance between successive eigenvalues as part of the shuffling. Defaults to False.
+        progress: show progress bar if True.
+        dtype: Desired dtype for output.
+        count: Number of matrices when using a generator.
+        max_workers: Maximum number of worker threads for concurrent execution.
+
+    Returns:
+        tuple: (sorted eigenvalues, indx_map from first set of eigenvectors)
+    """
+    import concurrent.futures
+    from threading import Lock
+
+    is_callable = callable(matrices)
+    if is_callable and count is None:
+        raise ValueError("`count` must be provided when passing a matrix factory")
+    if is_callable:
+        m = count
+        get_mat = lambda i: matrices(i)
+    else:
+        arr = np.asarray(matrices)
+        assert arr.ndim == 3, "matrices must be shape m×n×n"
+        m = arr.shape[0]
+        get_mat = lambda i: arr[i]
+
+    if progress:
+        if is_callable:
+            tqdm.write("Generating matrix elements..")
+
+    sample = get_mat(0)
+    n = sample.shape[-1]
+    in_dtype = sample.dtype
+    out_dtype = dtype if dtype is not None else in_dtype
+
+    values = np.empty((m, n), dtype=out_dtype)
+
+    # Simple NumPy diagonalization function
+    def eigh_func(mat):
+        return np.linalg.eigh(mat)
+
+    # Diagonalize first matrix
+    if progress:
+        tqdm.write("Diagonalizing first matrix...")
+    vals, vecs = eigh_func(sample)
+    values[0] = vals
+    prev_vecs = vecs
+
+    # Calculate state mapping from first eigenvectors
+    if progress:
+        tqdm.write("Calculating state mapping")
+    inv_vs = np.linalg.inv(vecs)
+    indxs = np.argmax(np.abs(inv_vs) ** 2, axis=0)
+    indx_map = {val: idx for idx, val in enumerate(indxs)}
+
+    # For concurrent execution, we need to manage futures and results
+    if max_workers is None:
+        max_workers = min(4, m // 2)  # Reasonable default
+
+    idxs = range(1, m)
+    iterator = LineLoggingTQDM(idxs, desc="Time to complete eigval diag+shuffle (turbo)", unit="matrix") if progress else idxs
+    
+    # Use ThreadPoolExecutor for I/O bound matrix generation and CPU bound eigendecomposition
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Start by submitting the first few diagonalizations
+        future_to_idx = {}
+        
+        # Submit initial batch of diagonalizations
+        batch_size = min(max_workers, m - 1)
+        for i in range(1, min(1 + batch_size, m)):
+            mat = get_mat(i)
+            future = executor.submit(eigh_func, mat)
+            future_to_idx[future] = i
+        
+        for i in iterator:
+            # Wait for current matrix diagonalization to complete
+            current_future = None
+            for future, idx in future_to_idx.items():
+                if idx == i:
+                    current_future = future
+                    break
+            
+            if current_future is None:
+                # Fallback: diagonalize synchronously if future not found
+                mat = get_mat(i)
+                vals, vecs = eigh_func(mat)
+            else:
+                vals, vecs = current_future.result()
+                future_to_idx.pop(current_future)
+            
+            # Submit next matrix diagonalization if available
+            next_idx = i + batch_size
+            if next_idx < m:
+                mat = get_mat(next_idx)
+                future = executor.submit(eigh_func, mat)
+                future_to_idx[future] = next_idx
+            
+            # Perform Hungarian assignment and sign correction
+            distance = 1 - np.abs(prev_vecs.T @ vecs)
+            if use_eigenvalues:
+                dist_vals = np.sqrt(
+                    distance_matrix(values[i-1].real, vals.real)**2 +
+                    distance_matrix(values[i-1].imag, vals.imag)**2
+                )
+                distance *= dist_vals
+            
+            _, col_ind = linear_sum_assignment(distance)
+            vals, vecs = vals[col_ind], vecs[:, col_ind]
+            
+            # Sign correction
+            dot = np.sum(prev_vecs * vecs, axis=0).real
+            flip = -(((dot < 0).astype(int) * 2) + 1)
+            vecs *= flip
+            
+            values[i] = vals
+            prev_vecs = vecs
+    
     return values, indx_map
 
 
