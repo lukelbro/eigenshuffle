@@ -674,25 +674,31 @@ def eigenshuffle_eighvals_turbo(
     dtype: np.dtype | None = None,
     count: int | None = None,
     max_workers: int | None = None,
+    max_parallel_diag: int | None = None,
+    use_mlx: bool = False,
+    force_gc: bool = False,
 ) -> tuple[npt.NDArray[np.floating] | npt.NDArray[np.complexfloating], npt.NDArray[np.int_]]:
     """
     Fast compute eigenvalues only with eigh (Hermitian) using concurrent execution to overlap
-    matrix diagonalization with Hungarian assignment. Simplified version with fewer options
-    for better performance.
+    matrix diagonalization with Hungarian assignment. The key optimization is running 
+    linear_sum_assignment concurrently with the next matrix diagonalization.
 
     Args:
         matrices: mxnxn array of eigenvalue problems
         use_eigenvalues: Use the distance between successive eigenvalues as part of the shuffling. Defaults to False.
-        progress: show progress bar if True.
+        progress: show progress bar if True (tracks linear assignment progress).
         dtype: Desired dtype for output.
         count: Number of matrices when using a generator.
-        max_workers: Maximum number of worker threads for concurrent execution.
+        max_workers: Maximum number of worker threads for concurrent execution. Defaults to 2.
+        max_parallel_diag: Maximum number of matrices to diagonalize in parallel. If None, defaults to max_workers.
+                          For large matrices (2000x2000+), keeping this at 2 helps manage memory usage.
+        use_mlx: Use MLX for eigenvalue computation if True.
+        force_gc: Force garbage collection after each iteration for very large matrices (>1500x1500).
 
     Returns:
         tuple: (sorted eigenvalues, indx_map from first set of eigenvectors)
     """
     import concurrent.futures
-    from threading import Lock
 
     is_callable = callable(matrices)
     if is_callable and count is None:
@@ -715,11 +721,26 @@ def eigenshuffle_eighvals_turbo(
     in_dtype = sample.dtype
     out_dtype = dtype if dtype is not None else in_dtype
 
+    # Auto-enable garbage collection for very large matrices
+    if not force_gc and n >= 1500:
+        force_gc = True
+        if progress:
+            tqdm.write(f"Auto-enabling garbage collection for {n}x{n} matrices")
+
     values = np.empty((m, n), dtype=out_dtype)
 
-    # Simple NumPy diagonalization function
-    def eigh_func(mat):
-        return np.linalg.eigh(mat)
+    # Set up diagonalization function based on backend choice
+    if use_mlx:
+        import mlx.core as mx
+        def eigh_func(mat):
+            # Convert to MLX array and ensure it's hermitian-compatible
+            A_mx = mx.array(mat, dtype=mx.float64)
+            eigvals_mx, eigvecs_mx = mx.linalg.eigh(A_mx, stream=mx.cpu)
+            return np.array(eigvals_mx, copy=False), np.array(eigvecs_mx, copy=False)
+    else:
+        # Standard NumPy diagonalization function
+        def eigh_func(mat):
+            return np.linalg.eigh(mat)
 
     # Diagonalize first matrix
     if progress:
@@ -727,6 +748,8 @@ def eigenshuffle_eighvals_turbo(
     vals, vecs = eigh_func(sample)
     values[0] = vals
     prev_vecs = vecs
+    # Delete sample matrix to free memory
+    del sample
 
     # Calculate state mapping from first eigenvectors
     if progress:
@@ -734,50 +757,47 @@ def eigenshuffle_eighvals_turbo(
     inv_vs = np.linalg.inv(vecs)
     indxs = np.argmax(np.abs(inv_vs) ** 2, axis=0)
     indx_map = {val: idx for idx, val in enumerate(indxs)}
+    # Delete intermediate variables to free memory
+    del inv_vs, indxs, vals
 
-    # For concurrent execution, we need to manage futures and results
+    if m == 1:
+        return values, indx_map
+
+    # Set up parallel execution parameters - default to 2 for memory efficiency
     if max_workers is None:
-        max_workers = min(4, m // 2)  # Reasonable default
-
-    idxs = range(1, m)
-    iterator = LineLoggingTQDM(idxs, desc="Time to complete eigval diag+shuffle (turbo)", unit="matrix") if progress else idxs
+        max_workers = 2  # Conservative default for memory reasons, especially with large matrices
+    if max_parallel_diag is None:
+        max_parallel_diag = max_workers  # By default, same as max_workers to avoid oversubscription
     
-    # Use ThreadPoolExecutor for I/O bound matrix generation and CPU bound eigendecomposition
+    # Progress bar tracks only the linear assignment operations
+    assignment_idxs = range(1, m)
+    iterator = tqdm(assignment_idxs, desc="Hungarian assignment progress", unit="assignment") if progress else assignment_idxs
+    
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Start by submitting the first few diagonalizations
-        future_to_idx = {}
-        
-        # Submit initial batch of diagonalizations
-        batch_size = min(max_workers, m - 1)
-        for i in range(1, min(1 + batch_size, m)):
-            mat = get_mat(i)
-            future = executor.submit(eigh_func, mat)
-            future_to_idx[future] = i
+        # Pre-submit initial batch of matrix diagonalizations
+        diag_futures = {}
+        for i in range(1, min(m, 1 + max_parallel_diag)):
+            future = executor.submit(eigh_func, get_mat(i))
+            diag_futures[i] = future
         
         for i in iterator:
             # Wait for current matrix diagonalization to complete
-            current_future = None
-            for future, idx in future_to_idx.items():
-                if idx == i:
-                    current_future = future
-                    break
-            
-            if current_future is None:
-                # Fallback: diagonalize synchronously if future not found
-                mat = get_mat(i)
-                vals, vecs = eigh_func(mat)
+            if i in diag_futures:
+                vals, vecs = diag_futures[i].result()
+                # Immediately delete the future to free memory
+                del diag_futures[i]
             else:
-                vals, vecs = current_future.result()
-                future_to_idx.pop(current_future)
+                # Fallback: diagonalize synchronously if not pre-computed
+                vals, vecs = eigh_func(get_mat(i))
             
-            # Submit next matrix diagonalization if available
-            next_idx = i + batch_size
-            if next_idx < m:
-                mat = get_mat(next_idx)
-                future = executor.submit(eigh_func, mat)
-                future_to_idx[future] = next_idx
+            # Submit next matrix diagonalization if within parallel limit and available
+            next_batch_idx = i + max_parallel_diag
+            if next_batch_idx < m and next_batch_idx not in diag_futures:
+                future = executor.submit(eigh_func, get_mat(next_batch_idx))
+                diag_futures[next_batch_idx] = future
             
-            # Perform Hungarian assignment and sign correction
+            # Now perform the assignment work (this is what the progress bar tracks)
+            # Create distance matrix
             distance = 1 - np.abs(prev_vecs.T @ vecs)
             if use_eigenvalues:
                 dist_vals = np.sqrt(
@@ -785,17 +805,34 @@ def eigenshuffle_eighvals_turbo(
                     distance_matrix(values[i-1].imag, vals.imag)**2
                 )
                 distance *= dist_vals
+                # Delete dist_vals immediately to free memory
+                del dist_vals
             
+            # The bottleneck operation - Hungarian assignment
             _, col_ind = linear_sum_assignment(distance)
+            # Delete distance matrix immediately to free memory
+            del distance
+            
+            # Apply the assignment and sign correction
             vals, vecs = vals[col_ind], vecs[:, col_ind]
             
             # Sign correction
             dot = np.sum(prev_vecs * vecs, axis=0).real
             flip = -(((dot < 0).astype(int) * 2) + 1)
             vecs *= flip
+            # Delete temporary variables
+            del dot, flip
             
             values[i] = vals
+            # Update prev_vecs for next iteration, old prev_vecs will be garbage collected
             prev_vecs = vecs
+            # Delete current vals, vecs since they're stored in values and prev_vecs
+            del vals, vecs
+            
+            # Force garbage collection for large matrices to manage memory
+            if force_gc:
+                import gc
+                gc.collect()
     
     return values, indx_map
 
