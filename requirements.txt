@@ -1,0 +1,7 @@
+# This file lists the Python dependencies for your project.
+# Add any additional packages your project requires here.
+
+numpy
+scipy
+tqdm
+munkres

@@ -10,7 +10,7 @@ repository = "https://github.com/ograsdijk/eigenshuffle"
 [tool.poetry.dependencies]
 python = "^3.10"
 numpy = "^2.2.5"
-munkres = "^1.1.4"
+scipy = ">=1.11"
 tqdm = "^4.67.1"
 
 [tool.poetry.group.dev.dependencies]
@@ -25,6 +25,3 @@ build-backend = "poetry.core.masonry.api"
 [tool.mypy]
 plugins = "numpy.typing.mypy_plugin"
 
-[[tool.mypy.overrides]]
-module = "munkres.*"
-ignore_missing_imports = true
