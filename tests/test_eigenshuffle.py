@@ -102,3 +102,20 @@ class TestNumericalProperties:
         for i, mat in enumerate(matrix_array):
             raw_vals = np.linalg.eigvalsh(mat)
             assert np.allclose(np.sort(values[i]), np.sort(raw_vals))
+
+
+class TestBackend:
+    def test_unknown_backend_raises(self, matrix_array):
+        with pytest.raises(ValueError):
+            eigenshuffle(matrix_array, backend="nope")
+
+    def test_mlx_matches_numpy(self, matrix_array):
+        pytest.importorskip("mlx.core")
+        values, _ = eigenshuffle(matrix_array, backend="mlx")
+        assert values.dtype == np.float64
+        assert np.allclose(values, EXPECTED_EIGENVALUES)
+
+    def test_mlx_factory(self, matrix_factory):
+        pytest.importorskip("mlx.core")
+        values, _ = eigenshuffle(matrix_factory, count=len(T_SEQ), backend="mlx")
+        assert np.allclose(values, EXPECTED_EIGENVALUES)

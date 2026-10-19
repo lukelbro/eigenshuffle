@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import gc
 import concurrent.futures
-from typing import Callable, Sequence
+from typing import Callable, Literal, Sequence
 
 import numpy as np
 import numpy.typing as npt
 from scipy.optimize import linear_sum_assignment
 from tqdm import tqdm
 
-from ._core import apply_sign_correction, compute_indx_map
+from ._core import apply_sign_correction, compute_indx_map, get_eigh
 
 
 def eigenshuffle(
@@ -24,14 +24,16 @@ def eigenshuffle(
     max_workers: int = 4,
     max_parallel_diag: int = 4,
     force_gc: bool = False,
+    backend: Literal["numpy", "mlx"] = "numpy",
 ) -> tuple[npt.NDArray[np.floating], dict[int, int]]:
     """
-    Track eigenvalues across a sequence of Hermitian matrices.
+    Track eigenvalues across a sequence of real symmetric matrices.
 
-    Uses ``numpy.linalg.eigh`` for diagonalisation and
-    ``scipy.optimize.linear_sum_assignment`` (Hungarian algorithm) for optimal
-    eigenvector matching between consecutive steps.  Diagonalisation and
-    assignment are overlapped via a ``ThreadPoolExecutor``.
+    Diagonalises each matrix with ``numpy.linalg.eigh`` (or
+    ``mlx.core.linalg.eigh`` when ``backend="mlx"``) and matches eigenvectors
+    between consecutive steps with ``scipy.optimize.linear_sum_assignment``
+    (Hungarian algorithm).  Upcoming diagonalisations run in a
+    ``ThreadPoolExecutor`` while the current step is being matched.
 
     Parameters
     ----------
@@ -55,7 +57,11 @@ def eigenshuffle(
         current assignment step.
     force_gc:
         Call ``gc.collect()`` after every iteration.  Auto-enabled for
-        matrices larger than 1500×1500.
+        matrices of size 1500×1500 or larger.
+    backend:
+        Eigensolver to use: ``"numpy"`` (default) or ``"mlx"``.  The MLX
+        backend requires the optional ``mlx`` package (Apple silicon) and
+        runs on the CPU stream, since MLX has no GPU ``eigh``.
 
     Returns
     -------
@@ -63,9 +69,13 @@ def eigenshuffle(
         Tracked eigenvalues.  Row ``i`` corresponds to input matrix ``i``.
         Columns track the same physical state across all rows.
     indx_map : dict[int, int]
-        Mapping from physical-state label to column index, derived from the
-        dominant-weight decomposition of the first eigenvector matrix.
+        Mapping from column index of ``values`` to the index of the basis
+        state with the largest weight in that column's eigenvector at the
+        first step.  If one eigenvector dominates several basis states, only
+        the last of them is kept.
     """
+    eigh = get_eigh(backend)
+
     is_callable = callable(matrices)
     if is_callable and count is None:
         raise ValueError("`count` must be provided when passing a matrix factory")
@@ -93,7 +103,7 @@ def eigenshuffle(
 
     values = np.empty((m, n), dtype=out_dtype)
 
-    vals, vecs = np.linalg.eigh(sample)
+    vals, vecs = eigh(sample)
     values[0] = vals.astype(out_dtype)
     prev_vecs = vecs
     del sample
@@ -113,18 +123,18 @@ def eigenshuffle(
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         diag_futures: dict[int, concurrent.futures.Future] = {}
         for i in range(1, min(m, 1 + max_parallel_diag)):
-            diag_futures[i] = executor.submit(np.linalg.eigh, get_mat(i))
+            diag_futures[i] = executor.submit(eigh, get_mat(i))
 
         for i in iterator:
             if i in diag_futures:
                 vals, vecs = diag_futures.pop(i).result()
             else:
-                vals, vecs = np.linalg.eigh(get_mat(i))
+                vals, vecs = eigh(get_mat(i))
 
             next_idx = i + max_parallel_diag
             if next_idx < m and next_idx not in diag_futures:
                 diag_futures[next_idx] = executor.submit(
-                    np.linalg.eigh, get_mat(next_idx)
+                    eigh, get_mat(next_idx)
                 )
 
             distance = 1.0 - np.abs(prev_vecs.T @ vecs)
