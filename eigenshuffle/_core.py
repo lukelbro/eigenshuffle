@@ -48,8 +48,12 @@ def compute_indx_map(vecs: npt.NDArray[np.floating]) -> dict[int, int]:
 
 
 def apply_sign_correction(
-    prev_vecs: npt.NDArray[np.floating], vecs: npt.NDArray[np.floating]
-) -> npt.NDArray[np.floating]:
-    dot = np.sum(prev_vecs * vecs, axis=0).real
-    flip = -(((dot < 0).astype(int) * 2) + 1)
-    return vecs * flip
+    prev_vecs: npt.NDArray[np.inexact],
+    vecs: npt.NDArray[np.inexact],
+    tol: float = 1e-12,
+) -> npt.NDArray[np.inexact]:
+    overlaps = np.sum(prev_vecs.conj() * vecs, axis=0)
+    if np.isrealobj(prev_vecs) and np.isrealobj(vecs):
+        return vecs * np.where(overlaps < 0, -1.0, 1.0)
+    # align complex phases; the tol floor avoids blowing up when |overlap|≈0
+    return vecs * (overlaps.conj() / np.maximum(np.abs(overlaps), tol))

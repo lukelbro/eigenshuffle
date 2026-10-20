@@ -119,3 +119,53 @@ class TestBackend:
         pytest.importorskip("mlx.core")
         values, _ = eigenshuffle(matrix_factory, count=len(T_SEQ), backend="mlx")
         assert np.allclose(values, EXPECTED_EIGENVALUES)
+
+
+class TestReturnVectors:
+    def test_default_returns_two(self, matrix_array):
+        assert len(eigenshuffle(matrix_array)) == 2
+
+    def test_vectors_shape_and_eigenpairs(self, matrix_array):
+        values, _, vectors = eigenshuffle(matrix_array, return_vectors=True)
+        assert vectors.shape == matrix_array.shape
+        for i, mat in enumerate(matrix_array):
+            assert np.allclose(mat @ vectors[i], vectors[i] * values[i])
+            assert np.allclose(vectors[i].T @ vectors[i], np.eye(4))
+
+    def test_values_unchanged(self, matrix_array):
+        v_plain, _ = eigenshuffle(matrix_array)
+        v_vec, _, _ = eigenshuffle(matrix_array, return_vectors=True)
+        assert np.allclose(v_plain, v_vec)
+
+    def test_signs_continuous(self, matrix_array):
+        _, _, vectors = eigenshuffle(matrix_array, return_vectors=True)
+        overlaps = np.einsum("mij,mij->mj", vectors[:-1], vectors[1:])
+        assert np.all(overlaps > 0)
+
+    def test_single_matrix(self):
+        arr = make_matrix(0.0)[np.newaxis, ...]
+        _, _, vectors = eigenshuffle(arr, return_vectors=True)
+        assert vectors.shape == (1, 4, 4)
+
+
+class TestComplexHermitian:
+    @pytest.fixture
+    def complex_array(self, matrix_array):
+        # unitary rotation of the real sequence: same spectrum, complex vectors
+        rng = np.random.default_rng(0)
+        q, _ = np.linalg.qr(rng.normal(size=(4, 4)) + 1j * rng.normal(size=(4, 4)))
+        return q @ matrix_array @ q.conj().T
+
+    def test_eigenvalues_match_reference(self, complex_array):
+        values, _ = eigenshuffle(complex_array)
+        assert np.allclose(values, EXPECTED_EIGENVALUES)
+
+    def test_phases_continuous(self, complex_array):
+        values, _, vectors = eigenshuffle(complex_array, return_vectors=True)
+        assert np.iscomplexobj(vectors)
+        for i, mat in enumerate(complex_array):
+            assert np.allclose(mat @ vectors[i], vectors[i] * values[i])
+            assert np.allclose(vectors[i].conj().T @ vectors[i], np.eye(4))
+        overlaps = np.einsum("mij,mij->mj", vectors[:-1].conj(), vectors[1:])
+        assert np.allclose(overlaps.imag, 0)
+        assert np.all(overlaps.real > 0)

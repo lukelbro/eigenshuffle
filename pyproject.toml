@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "eigenshuffle"
-version = "0.2.0"
+version = "0.2.1"
 description = "Keep consistent order of eigenvalues and eigenvectors of successive eigenvalue/vector problems based on the inital ordering of eigenvalues from low to high by matching closest eigenvectors and eigenvalues."
 authors = ["ograsdijk <o.grasdijk@gmail.com>"]
 license = "MIT"

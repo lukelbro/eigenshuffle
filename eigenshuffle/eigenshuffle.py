@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import gc
 import concurrent.futures
-from typing import Callable, Literal, Sequence
+from typing import Callable, Literal, Sequence, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -12,11 +12,48 @@ from tqdm import tqdm
 from ._core import apply_sign_correction, compute_indx_map, get_eigh
 
 
+@overload
 def eigenshuffle(
     matrices: (
-        npt.NDArray[np.floating]
-        | Sequence[npt.NDArray[np.floating]]
-        | Callable[[int], npt.NDArray[np.floating]]
+        npt.NDArray[np.inexact]
+        | Sequence[npt.NDArray[np.inexact]]
+        | Callable[[int], npt.NDArray[np.inexact]]
+    ),
+    count: int | None = ...,
+    dtype: npt.DTypeLike = ...,
+    progress: bool = ...,
+    max_workers: int = ...,
+    max_parallel_diag: int = ...,
+    force_gc: bool = ...,
+    backend: Literal["numpy", "mlx"] = ...,
+    return_vectors: Literal[False] = ...,
+) -> tuple[npt.NDArray[np.floating], dict[int, int]]: ...
+
+
+@overload
+def eigenshuffle(
+    matrices: (
+        npt.NDArray[np.inexact]
+        | Sequence[npt.NDArray[np.inexact]]
+        | Callable[[int], npt.NDArray[np.inexact]]
+    ),
+    count: int | None = ...,
+    dtype: npt.DTypeLike = ...,
+    progress: bool = ...,
+    max_workers: int = ...,
+    max_parallel_diag: int = ...,
+    force_gc: bool = ...,
+    backend: Literal["numpy", "mlx"] = ...,
+    *,
+    return_vectors: Literal[True],
+) -> tuple[npt.NDArray[np.floating], dict[int, int], npt.NDArray[np.inexact]]: ...
+
+
+def eigenshuffle(
+    matrices: (
+        npt.NDArray[np.inexact]
+        | Sequence[npt.NDArray[np.inexact]]
+        | Callable[[int], npt.NDArray[np.inexact]]
     ),
     count: int | None = None,
     dtype: npt.DTypeLike = np.float64,
@@ -25,9 +62,13 @@ def eigenshuffle(
     max_parallel_diag: int = 4,
     force_gc: bool = False,
     backend: Literal["numpy", "mlx"] = "numpy",
-) -> tuple[npt.NDArray[np.floating], dict[int, int]]:
+    return_vectors: bool = False,
+) -> (
+    tuple[npt.NDArray[np.floating], dict[int, int]]
+    | tuple[npt.NDArray[np.floating], dict[int, int], npt.NDArray[np.inexact]]
+):
     """
-    Track eigenvalues across a sequence of real symmetric matrices.
+    Track eigenvalues across a sequence of Hermitian matrices.
 
     Diagonalises each matrix with ``numpy.linalg.eigh`` (or
     ``mlx.core.linalg.eigh`` when ``backend="mlx"``) and matches eigenvectors
@@ -62,6 +103,9 @@ def eigenshuffle(
         Eigensolver to use: ``"numpy"`` (default) or ``"mlx"``.  The MLX
         backend requires the optional ``mlx`` package (Apple silicon) and
         runs on the CPU stream, since MLX has no GPU ``eigh``.
+    return_vectors:
+        Also return the tracked eigenvectors.  This stores an ``(m, n, n)``
+        array, as large as the input, so it is off by default.
 
     Returns
     -------
@@ -73,6 +117,11 @@ def eigenshuffle(
         state with the largest weight in that column's eigenvector at the
         first step.  If one eigenvector dominates several basis states, only
         the last of them is kept.
+    vectors : ndarray of shape (m, n, n)
+        Only returned when ``return_vectors=True``.  ``vectors[i][:, j]`` is
+        the eigenvector for ``values[i, j]``.  Each column's sign (or complex
+        phase) is chosen so its overlap with ``vectors[i - 1][:, j]`` is real
+        and non-negative.
     """
     eigh = get_eigh(backend)
 
@@ -83,7 +132,7 @@ def eigenshuffle(
     if is_callable:
         m: int = count  # type: ignore[assignment]
 
-        def get_mat(i: int) -> npt.NDArray[np.floating]:
+        def get_mat(i: int) -> npt.NDArray[np.inexact]:
             return matrices(i)  # type: ignore[operator]
     else:
         arr = np.asarray(matrices)
@@ -91,7 +140,7 @@ def eigenshuffle(
             raise ValueError("matrices must be shape (m, n, n)")
         m = arr.shape[0]
 
-        def get_mat(i: int) -> npt.NDArray[np.floating]:
+        def get_mat(i: int) -> npt.NDArray[np.inexact]:
             return arr[i]
 
     sample = get_mat(0)
@@ -105,6 +154,9 @@ def eigenshuffle(
 
     vals, vecs = eigh(sample)
     values[0] = vals.astype(out_dtype)
+    vectors = np.empty((m, n, n), dtype=vecs.dtype) if return_vectors else None
+    if vectors is not None:
+        vectors[0] = vecs
     prev_vecs = vecs
     del sample
 
@@ -112,6 +164,8 @@ def eigenshuffle(
     del vals
 
     if m == 1:
+        if vectors is not None:
+            return values, indx_map, vectors
         return values, indx_map
 
     iterator = (
@@ -137,7 +191,7 @@ def eigenshuffle(
                     eigh, get_mat(next_idx)
                 )
 
-            distance = 1.0 - np.abs(prev_vecs.T @ vecs)
+            distance = 1.0 - np.abs(prev_vecs.conj().T @ vecs)
             _, col_ind = linear_sum_assignment(distance)
             del distance
 
@@ -145,10 +199,14 @@ def eigenshuffle(
             vecs = apply_sign_correction(prev_vecs, vecs)
 
             values[i] = vals.astype(out_dtype)
+            if vectors is not None:
+                vectors[i] = vecs
             prev_vecs = vecs
             del vals, vecs
 
             if force_gc:
                 gc.collect()
 
+    if vectors is not None:
+        return values, indx_map, vectors
     return values, indx_map
